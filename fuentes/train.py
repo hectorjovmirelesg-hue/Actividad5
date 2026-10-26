@@ -1,8 +1,11 @@
-# Actividad 5 
-# Entrenamiento y registro de modelos con MLFlow
 
 import pandas as pd
-from sklearn.model_selection import train_test_split
+
+from sklearn.model_selection import (
+    train_test_split,
+    StratifiedKFold,
+    GridSearchCV
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
@@ -22,7 +25,7 @@ def entrenar_modelos(ruta_datos):
     X = df.drop(columns=["target"])
     y = df["target"]
 
-    # Separar entrenamiento y prueba
+    # Mantener la misma division inicial
     X_train, X_test, y_train, y_test = train_test_split(
         X, y,
         test_size=0.20,
@@ -30,41 +33,78 @@ def entrenar_modelos(ruta_datos):
         stratify=y
     )
 
-    # Definir modelos
-    modelos = {
-        "Regresion_Logistica": Pipeline([
-            ("scaler", StandardScaler()),
-            ("modelo", LogisticRegression(
-                max_iter=1000,
+    # Validacion cruzada estratificada
+    cv = StratifiedKFold(
+        n_splits=5,
+        shuffle=True,
+        random_state=42
+    )
+
+    # Modelos e hiperparametros
+    configuraciones = {
+        "Regresion_Logistica": {
+            "modelo": Pipeline([
+                ("scaler", StandardScaler()),
+                ("modelo", LogisticRegression(
+                    max_iter=2000,
+                    random_state=42
+                ))
+            ]),
+            "parametros": {
+                "modelo__C": [0.01, 0.1, 1, 10, 100]
+            }
+        },
+        "Random_Forest": {
+            "modelo": RandomForestClassifier(
                 random_state=42
-            ))
-        ]),
-        "Random_Forest": RandomForestClassifier(
-            n_estimators=100,
-            random_state=42
-        )
+            ),
+            "parametros": {
+                "n_estimators": [50, 100, 200],
+                "max_depth": [None, 5, 10],
+                "min_samples_split": [2, 5]
+            }
+        }
     }
 
     resultados = {}
 
-    # Entrenar y evaluar
-    for nombre, modelo in modelos.items():
-        modelo.fit(X_train, y_train)
+    for nombre, config in configuraciones.items():
+        print(f"\nOptimizando: {nombre}")
 
-        predicciones = modelo.predict(X_test)
-        probabilidades = modelo.predict_proba(X_test)[:, 1]
+        busqueda = GridSearchCV(
+            estimator=config["modelo"],
+            param_grid=config["parametros"],
+            scoring="f1",
+            cv=cv,
+            n_jobs=-1,
+            refit=True
+        )
+
+        # Ajustar exclusivamente con entrenamiento
+        busqueda.fit(X_train, y_train)
+
+        mejor_modelo = busqueda.best_estimator_
+
+        # Evaluacion final con datos de prueba
+        predicciones = mejor_modelo.predict(X_test)
+        probabilidades = mejor_modelo.predict_proba(X_test)[:, 1]
 
         metricas = {
             "accuracy": accuracy_score(y_test, predicciones),
             "precision": precision_score(y_test, predicciones),
             "recall": recall_score(y_test, predicciones),
             "f1_score": f1_score(y_test, predicciones),
-            "roc_auc": roc_auc_score(y_test, probabilidades)
+            "roc_auc": roc_auc_score(y_test, probabilidades),
+            "cv_f1": busqueda.best_score_
         }
 
         resultados[nombre] = metricas
 
-        print(f"\nModelo: {nombre}")
+        print("Mejores hiperparametros:")
+        print(busqueda.best_params_)
+        print(f"F1 promedio CV: {busqueda.best_score_:.4f}")
+
+        print("Metricas de prueba:")
         for metrica, valor in metricas.items():
             print(f"{metrica}: {valor:.4f}")
 
