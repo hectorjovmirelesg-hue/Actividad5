@@ -1,6 +1,9 @@
 
 import pandas as pd
+import mlflow
+import mlflow.sklearn
 
+from pathlib import Path
 from sklearn.model_selection import (
     train_test_split,
     StratifiedKFold,
@@ -18,14 +21,24 @@ from sklearn.metrics import (
     roc_auc_score
 )
 
-def entrenar_modelos(ruta_datos):
-    # Cargar dataset limpio
-    df = pd.read_csv(ruta_datos)
 
+def entrenar_modelos(ruta_datos):
+
+    # Configuracion de MLflow
+    Path("mlflow_data").mkdir(exist_ok=True)
+    mlflow.set_tracking_uri(
+        "sqlite:///mlflow_data/mlflow.db"
+    )
+    mlflow.set_experiment(
+        "Actividad5_Comparacion_Modelos"
+    )
+
+    # Cargar datos
+    df = pd.read_csv(ruta_datos)
     X = df.drop(columns=["target"])
     y = df["target"]
 
-    # Mantener la misma division inicial
+    # Separacion entrenamiento y prueba
     X_train, X_test, y_train, y_test = train_test_split(
         X, y,
         test_size=0.20,
@@ -33,14 +46,13 @@ def entrenar_modelos(ruta_datos):
         stratify=y
     )
 
-    # Validacion cruzada estratificada
+    # Validacion cruzada
     cv = StratifiedKFold(
         n_splits=5,
         shuffle=True,
         random_state=42
     )
 
-    # Modelos e hiperparametros
     configuraciones = {
         "Regresion_Logistica": {
             "modelo": Pipeline([
@@ -69,7 +81,8 @@ def entrenar_modelos(ruta_datos):
     resultados = {}
 
     for nombre, config in configuraciones.items():
-        print(f"\nOptimizando: {nombre}")
+
+        print(f"\nEntrenando: {nombre}")
 
         busqueda = GridSearchCV(
             estimator=config["modelo"],
@@ -80,14 +93,11 @@ def entrenar_modelos(ruta_datos):
             refit=True
         )
 
-        # Ajustar exclusivamente con entrenamiento
         busqueda.fit(X_train, y_train)
 
-        mejor_modelo = busqueda.best_estimator_
-
-        # Evaluacion final con datos de prueba
-        predicciones = mejor_modelo.predict(X_test)
-        probabilidades = mejor_modelo.predict_proba(X_test)[:, 1]
+        modelo = busqueda.best_estimator_
+        predicciones = modelo.predict(X_test)
+        probabilidades = modelo.predict_proba(X_test)[:, 1]
 
         metricas = {
             "accuracy": accuracy_score(y_test, predicciones),
@@ -100,12 +110,40 @@ def entrenar_modelos(ruta_datos):
 
         resultados[nombre] = metricas
 
-        print("Mejores hiperparametros:")
-        print(busqueda.best_params_)
-        print(f"F1 promedio CV: {busqueda.best_score_:.4f}")
+        # Registrar experimento completo
+        with mlflow.start_run(
+            run_name=f"{nombre}_GridSearch"
+        ):
 
-        print("Metricas de prueba:")
-        for metrica, valor in metricas.items():
-            print(f"{metrica}: {valor:.4f}")
+            mlflow.log_param("algoritmo", nombre)
+            mlflow.log_param("cv_folds", 5)
+            mlflow.log_param("test_size", 0.20)
+            mlflow.log_param("random_state", 42)
+
+            mlflow.log_params(busqueda.best_params_)
+
+            mlflow.log_metrics({
+                k: float(v)
+                for k, v in metricas.items()
+            })
+
+            # Registrar modelo
+            if nombre == "Random_Forest":
+                mlflow.sklearn.log_model(
+                    sk_model=modelo,
+                    name="modelo_entrenado",
+                    skops_trusted_types=[
+                        "sklearn.tree._tree.Tree"
+                    ]
+                )
+            else:
+                mlflow.sklearn.log_model(
+                    sk_model=modelo,
+                    name="modelo_entrenado"
+                )
+
+        print("Mejores parametros:", busqueda.best_params_)
+        print("Metricas:", metricas)
+        print("Modelo registrado en MLflow")
 
     return resultados
